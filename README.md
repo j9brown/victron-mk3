@@ -78,3 +78,10 @@ The front panel switch and other inputs on the device may override the remote sw
   will not operate regardless of the remote switch state set by this interface.
 - Other conditions determined by the device may also apply such as constaints on the
   mains voltage and battery state of charge.
+
+## Build for distribution
+
+```
+pip install setuptools build
+python3 -m build
+```
