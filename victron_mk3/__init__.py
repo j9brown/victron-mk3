@@ -176,6 +176,11 @@ class StateFrame(Frame):
         pass
 
 
+class TimeoutFrame(Frame):
+    def __init__(self) -> None:
+        pass
+
+
 Handler = Callable[[int], None]
 
 
@@ -268,6 +273,7 @@ class VictronMK3:
                 except TimeoutError:
                     # May have lost stream synchronization, start over and hope to recover eventually
                     logger.debug("** Read timeout")
+                    self._handler(TimeoutFrame())
                     continue
 
                 if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
