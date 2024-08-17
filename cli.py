@@ -20,17 +20,17 @@ def cli(verbose):
     help="Monitor the status of the device attached to a Victron MK3 interface"
 )
 @click.argument("device", type=str)
-def monitor(device: str):
+def monitor(device: str) -> None:
     ac_num_phases = 1
     loop = asyncio.get_event_loop()
 
-    def handler(frame: Frame):
+    def handler(frame: Frame) -> None:
         frame.log(logger)
         if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
 
-    async def main():
+    async def main() -> None:
         mk3 = await open_victron_mk3(device, handler)
         loop.create_task(mk3.listen())
 
@@ -69,7 +69,7 @@ def control(device: str, switch_state: str, current_limit: float, monitor: bool)
     ac_num_phases = 1
     loop = asyncio.get_event_loop()
 
-    def handler(frame: Frame):
+    def handler(frame: Frame) -> None:
         frame.log(logger)
         if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases

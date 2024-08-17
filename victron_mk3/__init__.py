@@ -68,12 +68,12 @@ class SwitchRegister(IntFlag):
 
 
 class VariableInfo:
-    def __init__(self, signed: bool, scale: float, offset: int):
+    def __init__(self, signed: bool, scale: float, offset: int) -> None:
         self._signed = signed
         self._scale = scale
         self._offset = offset
 
-    def parse(self, raw: bytes):
+    def parse(self, raw: bytes) -> float:
         if len(raw) == 1:
             raw = raw[0]
             if self._signed and raw >= 0x80:
@@ -92,7 +92,7 @@ class VariableInfo:
 
 
 class Frame:
-    def log(self, logger: logging.Logger):
+    def log(self, logger: logging.Logger) -> None:
         logger.info(self.__class__.__qualname__)
         for field, value in vars(self).items():
             if isinstance(value, Enum):
@@ -101,12 +101,12 @@ class Frame:
 
 
 class VersionFrame(Frame):
-    def __init__(self, version):
+    def __init__(self, version: int) -> None:
         self.version = version
 
 
 class LEDFrame(Frame):
-    def __init__(self, on: LEDState, blink: LEDState):
+    def __init__(self, on: LEDState, blink: LEDState) -> None:
         self.on = on
         self.blink = blink
 
@@ -123,7 +123,7 @@ class ConfigFrame(Frame):
         maximum_current_limit: float,
         actual_current_limit: float,
         switch_register: SwitchRegister,
-    ):
+    ) -> None:
         self.last_active_ac_input = last_active_ac_input
         self.current_limit_overridden_by_panel = current_limit_overridden_by_panel
         self.digital_multi_control_dedicated = digital_multi_control_dedicated
@@ -142,7 +142,7 @@ class DCFrame(Frame):
         dc_current_to_inverter: float,
         dc_current_from_charger: float,
         ac_inverter_frequency: float,
-    ):
+    ) -> None:
         self.dc_voltage = dc_voltage
         self.dc_current_to_inverter = dc_current_to_inverter
         self.dc_current_from_charger = dc_current_from_charger
@@ -160,7 +160,7 @@ class ACFrame(Frame):
         ac_inverter_voltage: float,
         ac_inverter_current: float,
         ac_mains_frequency: float,
-    ):
+    ) -> None:
         self.ac_phase = ac_phase
         self.ac_num_phases = ac_num_phases
         self.device_state = device_state
@@ -172,7 +172,7 @@ class ACFrame(Frame):
 
 
 class StateFrame(Frame):
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
 
@@ -192,36 +192,36 @@ class VictronMK3:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         handler: Handler,
-    ):
+    ) -> None:
         self._reader = reader
         self._writer = writer
         self._handler = handler
-        self._w_nonce = 0
-        self._w_completion = None
+        self._w_nonce: int = 0
+        self._w_completion: Callable[[bytes], None] = None
         self._variable_id_queue = [0, 1, 2, 3, 4, 5, 7, 8]
         self._variable_info = {}
         self._variable_info_request_time = None
 
-    def close(self):
+    def close(self) -> None:
         self._writer.close()
 
-    async def wait_closed(self):
+    async def wait_closed(self) -> None:
         await self._writer.wait_closed()
 
-    def send_version_request(self):
+    def send_version_request(self) -> None:
         self._send_frame("V", [])
 
-    def send_led_request(self):
+    def send_led_request(self) -> None:
         self._send_frame("L", [])
 
-    def send_dc_request(self):
+    def send_dc_request(self) -> None:
         self._send_frame("F", [0])
 
-    def send_ac_request(self, phase: int):
+    def send_ac_request(self, phase: int) -> None:
         assert phase >= 1 and phase <= 4
         self._send_frame("F", [phase])
 
-    def send_config_request(self):
+    def send_config_request(self) -> None:
         self._send_frame("F", [5])
 
     # current limit is in amps
@@ -230,7 +230,7 @@ class VictronMK3:
     # - otherwise it is set to the provided value and clamped to the range supported by the device
     def send_state_request(
         self, switch_state: SwitchState, current_limit: float | None = None
-    ):
+    ) -> None:
         if current_limit is None:
             value = 0x8000
         elif current_limit <= 0:
@@ -239,7 +239,7 @@ class VictronMK3:
             value = min(int(current_limit * 10), 0x7FFF)
         self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x81])
 
-    def _send_frame(self, command: int, data: List[int]):
+    def _send_frame(self, command: int, data: List[int]) -> None:
         msg = bytearray(len(data) + 4)
         msg[0] = len(data) + 2
         msg[1] = 0xFF
@@ -253,7 +253,7 @@ class VictronMK3:
         except serial.SerialException:
             raise VictronMK3Exception("Communication error")
 
-    async def listen(self):
+    async def listen(self) -> None:
         await self._reset_interface()
         self._populate_next_variable_info()
 
@@ -277,7 +277,7 @@ class VictronMK3:
         except serial.SerialException:
             raise VictronMK3Exception("Communication error")
 
-    def _handle_frame(self, msg: bytes):
+    def _handle_frame(self, msg: bytes) -> None:
         if len(msg) >= 2 and msg[0] == 0xFF:  # Command Frame
             if msg[1] == ord("V") and len(msg) >= 6:
                 self._handler(
@@ -352,13 +352,13 @@ class VictronMK3:
                 )
             )
 
-    async def _reset_interface(self):
+    async def _reset_interface(self) -> None:
         # The sleep may not actually needed but the reset seems more reliable this way
         self._send_frame("R", [])
         await asyncio.sleep(1)
         self.send_version_request()
 
-    def _populate_next_variable_info(self):
+    def _populate_next_variable_info(self) -> None:
         if len(self._variable_id_queue) == 0:
             return
         now = time.monotonic()
@@ -380,7 +380,7 @@ class VictronMK3:
             [0x36, id & 255, id >> 8], self._handle_variable_info_response
         )
 
-    def _handle_variable_info_response(self, msg: bytes):
+    def _handle_variable_info_response(self, msg: bytes) -> None:
         self._variable_info_request_time = None
         if len(msg) >= 8 and msg[2] == 0x8E and msg[5] == 0x8F:
             scale = msg[3] | msg[4] << 8
@@ -397,23 +397,23 @@ class VictronMK3:
             self._variable_info[id] = VariableInfo(signed, scale, offset)
             self._populate_next_variable_info()
 
-    def _send_w_request(self, msg: bytes, completion: Callable[[bytes], None]):
+    def _send_w_request(self, msg: bytes, completion: Callable[[bytes], None]) -> None:
         self._w_nonce = (self._w_nonce + 1) % 4
         self._w_completion = completion
         self._send_frame(["W", "X", "Y", "Z"][self._w_nonce], msg)
 
-    def _handle_w_response(self, nonce: int, msg: bytes):
+    def _handle_w_response(self, nonce: int, msg: bytes) -> None:
         if self._w_nonce != nonce or self._w_completion is None:
             return None
         completion = self._w_completion
         self._w_completion = None
         completion(msg)
 
-    def _period_to_frequency(period: float):
+    def _period_to_frequency(period: float) -> float:
         return round(0 if period == 0 else 10 / period, 2)
 
 
-async def open_victron_mk3(device: str, handler: Handler):
+async def open_victron_mk3(device: str, handler: Handler) -> VictronMK3:
     try:
         reader, writer = await serial_asyncio.open_serial_connection(
             url=device,
@@ -422,5 +422,5 @@ async def open_victron_mk3(device: str, handler: Handler):
             stopbits=serial.STOPBITS_ONE,
         )
     except serial.SerialException:
-        raise VictronMK3Exception(f'Failed to open serial port {device}')
+        raise VictronMK3Exception(f"Failed to open serial port {device}")
     return VictronMK3(reader, writer, handler)
