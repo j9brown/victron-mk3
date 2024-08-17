@@ -217,14 +217,18 @@ class VEBus:
         self._send_frame("F", [5])
 
     # current limit is in amps
+    # - if None, the limit is set to its maximum
+    # - if 0, the value is set to its minimum
+    # - otherwise it is set to the provided value and clamped to the range supported by the device
     def send_state_request(
-        self, switch_state: SwitchState, current_limit: float = None
+        self, switch_state: SwitchState, current_limit: float|None = None
     ):
-        value = (
-            0x8000
-            if current_limit is None
-            else max(min(int(current_limit * 10), 0x8000), 0)
-        )
+        if current_limit is None:
+            value = 0x8000
+        elif current_limit <= 0:
+            value = 0
+        else:
+            value = min(int(current_limit * 10), 0x7fff)
         self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x81])
 
     def _send_frame(self, command: int, data: List[int]):
