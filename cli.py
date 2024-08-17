@@ -1,7 +1,7 @@
 import asyncio
 import click
 import logging
-from victron_mk3 import ACFrame, Frame, SwitchState, StateFrame, open_bus
+from victron_mk3 import ACFrame, Frame, SwitchState, StateFrame, open_victron_mk3
 
 DELAY_BETWEEN_COMMANDS = 2
 
@@ -16,7 +16,9 @@ def cli(verbose):
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
-@cli.command(help="Monitor the status of the attached VE.Bus device")
+@cli.command(
+    help="Monitor the status of the device attached to a Victron MK3 interface"
+)
 @click.argument("device", type=str)
 def monitor(device: str):
     ac_num_phases = 1
@@ -29,26 +31,25 @@ def monitor(device: str):
             ac_num_phases = frame.ac_num_phases
 
     async def main():
-        bus = await open_bus(device, handler)
-        loop.create_task(bus.listen())
+        mk3 = await open_victron_mk3(device, handler)
+        loop.create_task(mk3.listen())
 
         while True:
-            bus.send_led_request()
+            mk3.send_led_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
-            bus.send_dc_request()
+            mk3.send_dc_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
             for phase in range(1, ac_num_phases + 1):
-                bus.send_ac_request(phase)
+                mk3.send_ac_request(phase)
                 await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
-            bus.send_config_request()
+            mk3.send_config_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
 
-    loop.create_task(main())
-    loop.run_forever()
+    loop.run_until_complete(main())
 
 
 @cli.command(
-    help="Set the switch state and current limit of the attached VE.Bus device"
+    help="Set the switch state and current limit of the device attached to a Victron MK3 interface"
 )
 @click.argument("device", type=str)
 @click.argument(
@@ -78,29 +79,29 @@ def control(device: str, switch_state: str, current_limit: float, monitor: bool)
             ack = True
             logger.info("Switch state change acknowledged!")
 
-    async def main():
-        bus = await open_bus(device, handler)
-        loop.create_task(bus.listen())
+    async def main() -> None:
+        mk3 = await open_victron_mk3(device, handler)
+        loop.create_task(mk3.listen())
 
         while not ack:
-            bus.send_state_request(switch_state, current_limit)
+            mk3.send_state_request(switch_state, current_limit)
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
-            bus.send_config_request()
+            mk3.send_config_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
 
         while monitor:
-            bus.send_led_request()
+            mk3.send_led_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
-            bus.send_dc_request()
+            mk3.send_dc_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
             for phase in range(1, ac_num_phases + 1):
-                bus.send_ac_request(phase)
+                mk3.send_ac_request(phase)
                 await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
-            bus.send_config_request()
+            mk3.send_config_request()
             await asyncio.sleep(DELAY_BETWEEN_COMMANDS)
 
-        bus.close()
-        await bus.wait_closed()
+        mk3.close()
+        await mk3.wait_closed()
 
     loop.run_until_complete(main())
 

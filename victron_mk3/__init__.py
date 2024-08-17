@@ -179,7 +179,11 @@ class StateFrame(Frame):
 Handler = Callable[[int], None]
 
 
-class VEBus:
+class VictronMK3Exception(Exception):
+    pass
+
+
+class VictronMK3:
     _VARIABLE_INFO_REQUEST_TIMEOUT = 2  # seconds
     _READ_TIMEOUT = 2
 
@@ -244,28 +248,34 @@ class VEBus:
         msg[-1] = (256 - sum(msg[:-1])) & 255
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f">> {msg.hex()}")
-        self._writer.write(msg)
+        try:
+            self._writer.write(msg)
+        except serial.SerialException:
+            raise VictronMK3Exception("Communication error")
 
     async def listen(self):
         await self._reset_interface()
         self._populate_next_variable_info()
 
-        while True:
-            try:
-                async with asyncio.timeout(VEBus._READ_TIMEOUT):
-                    size = await self._reader.read(1)
-                    if len(size) != 1:
-                        break
-                    msg = await self._reader.readexactly(size[0] + 1)
-            except TimeoutError:
-                # May have lost stream synchronization, start over and hope to recover eventually
-                logger.debug("** Read timeout")
-                continue
+        try:
+            while True:
+                try:
+                    async with asyncio.timeout(VictronMK3._READ_TIMEOUT):
+                        size = await self._reader.read(1)
+                        if len(size) != 1:
+                            break
+                        msg = await self._reader.readexactly(size[0] + 1)
+                except TimeoutError:
+                    # May have lost stream synchronization, start over and hope to recover eventually
+                    logger.debug("** Read timeout")
+                    continue
 
-            if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"<< {size.hex()}{msg.hex()}")
-                self._handle_frame(msg)
+                if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"<< {size.hex()}{msg.hex()}")
+                    self._handle_frame(msg)
+        except serial.SerialException:
+            raise VictronMK3Exception("Communication error")
 
     def _handle_frame(self, msg: bytes):
         if len(msg) >= 2 and msg[0] == 0xFF:  # Command Frame
@@ -299,7 +309,7 @@ class VEBus:
                             dc_current_from_charger=self._variable_info[5].parse(
                                 msg[11:14]
                             ),
-                            ac_inverter_frequency=VEBus._period_to_frequency(
+                            ac_inverter_frequency=VictronMK3._period_to_frequency(
                                 self._variable_info[7].parse(msg[14:15])
                             ),
                         )
@@ -320,7 +330,7 @@ class VEBus:
                             ),
                             ac_inverter_current=self._variable_info[3].parse(msg[12:14])
                             * msg[2],
-                            ac_mains_frequency=VEBus._period_to_frequency(
+                            ac_mains_frequency=VictronMK3._period_to_frequency(
                                 self._variable_info[8].parse(msg[14:15])
                             ),
                         )
@@ -354,7 +364,8 @@ class VEBus:
         now = time.monotonic()
         if (
             self._variable_info_request_time is not None
-            and self._variable_info_request_time + VEBus._VARIABLE_INFO_REQUEST_TIMEOUT
+            and self._variable_info_request_time
+            + VictronMK3._VARIABLE_INFO_REQUEST_TIMEOUT
             > now
         ):
             return
@@ -402,11 +413,14 @@ class VEBus:
         return round(0 if period == 0 else 10 / period, 2)
 
 
-async def open_bus(device: str, handler: Handler):
-    reader, writer = await serial_asyncio.open_serial_connection(
-        url=device,
-        baudrate=2400,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-    )
-    return VEBus(reader, writer, handler)
+async def open_victron_mk3(device: str, handler: Handler):
+    try:
+        reader, writer = await serial_asyncio.open_serial_connection(
+            url=device,
+            baudrate=2400,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+        )
+    except serial.SerialException:
+        raise VictronMK3Exception(f'Failed to open serial port {device}')
+    return VictronMK3(reader, writer, handler)
