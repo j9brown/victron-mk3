@@ -7,6 +7,9 @@ This library provides functions to allow the host computer to act as a remote
 control panel for the device. It can monitor the status and performance of
 the device and set remote switch state and current limits.
 
+See also the [Home Assistant integration](https://github.com/j9brown/victron-mk3-hacs) based
+on this library.
+
 ## Compatibility
 
 This library has been tested with the following devices:
