@@ -17,7 +17,7 @@ HACK_OVERRIDE_AC_NUM_PHASES = 2
 # the variable info indicates it is supposed to be unsigned. Override it.
 HACK_OVERRIDE_AC_INVERTER_CURRENT_SIGNEDNESS = True
 
-logger = logging.getLogger("victron_mk3")
+logger: logging.Logger = logging.getLogger("victron_mk3")
 
 
 class SwitchState(IntEnum):

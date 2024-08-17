@@ -1,13 +1,12 @@
 import asyncio
 import click
 import logging
-from victron_mk3 import ACFrame, Frame, SwitchState, StateFrame, open_victron_mk3
+from victron_mk3 import ACFrame, Frame, SwitchState, StateFrame, logger, open_victron_mk3
 
 DELAY_BETWEEN_COMMANDS = 2
 
 
 logging.basicConfig(format="%(message)s")
-logger = logging.getLogger("victron_mk3")
 
 
 @click.group()
