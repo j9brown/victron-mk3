@@ -1,7 +1,7 @@
 import asyncio
 import click
 import logging
-import vebus
+from victron_mk3 import ACFrame, Frame, SwitchState, StateFrame, open_bus
 
 DELAY_BETWEEN_COMMANDS = 2
 
@@ -22,14 +22,14 @@ def monitor(device: str):
     ac_num_phases = 1
     loop = asyncio.get_event_loop()
 
-    def handler(frame: vebus.Frame):
+    def handler(frame: Frame):
         frame.log(logger)
-        if isinstance(frame, vebus.ACFrame) and frame.ac_num_phases != 0:
+        if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
 
     async def main():
-        bus = await vebus.open_bus(device, handler)
+        bus = await open_bus(device, handler)
         loop.create_task(bus.listen())
 
         while True:
@@ -59,7 +59,7 @@ def monitor(device: str):
     "--monitor/--no-monitor", help="Keep monitoring the status after acknowledgment"
 )
 def control(device: str, switch_state: str, current_limit: float, monitor: bool):
-    switch_state = vebus.SwitchState[switch_state.upper()]
+    switch_state = SwitchState[switch_state.upper()]
     logger.info(
         f"Setting switch state to {switch_state.name} and current limit to {current_limit} amps"
     )
@@ -68,18 +68,18 @@ def control(device: str, switch_state: str, current_limit: float, monitor: bool)
     ac_num_phases = 1
     loop = asyncio.get_event_loop()
 
-    def handler(frame: vebus.Frame):
+    def handler(frame: Frame):
         frame.log(logger)
-        if isinstance(frame, vebus.ACFrame) and frame.ac_num_phases != 0:
+        if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
-        if isinstance(frame, vebus.StateFrame):
+        if isinstance(frame, StateFrame):
             nonlocal ack
             ack = True
             logger.info("Switch state change acknowledged!")
 
     async def main():
-        bus = await vebus.open_bus(device, handler)
+        bus = await open_bus(device, handler)
         loop.create_task(bus.listen())
 
         while not ack:
