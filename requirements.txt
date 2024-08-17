@@ -1,0 +1,4 @@
+asyncio
+click
+pyserial
+pyserial-asyncio
