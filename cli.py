@@ -1,22 +1,19 @@
 import asyncio
 import click
-from enum import Enum
+import logging
 import vebus
 
 DELAY_BETWEEN_COMMANDS = 2
 
 
-def print_frame(frame: vebus.Frame):
-    print(frame.__class__.__qualname__)
-    for field, value in vars(frame).items():
-        if isinstance(value, Enum):
-            value = value.name
-        print(f"  {field}: {value}")
+logging.basicConfig(format="%(message)s")
+logger = logging.getLogger("victron_mk3")
 
 
 @click.group()
-def cli():
-    pass
+@click.option("-v", "--verbose", is_flag=True, help="Increase logging output")
+def cli(verbose):
+    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
 
 @cli.command(help="Monitor the status of the attached VE.Bus device")
@@ -26,7 +23,7 @@ def monitor(device: str):
     loop = asyncio.get_event_loop()
 
     def handler(frame: vebus.Frame):
-        print_frame(frame)
+        frame.log(logger)
         if isinstance(frame, vebus.ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
@@ -63,7 +60,7 @@ def monitor(device: str):
 )
 def control(device: str, switch_state: str, current_limit: float, monitor: bool):
     switch_state = vebus.SwitchState[switch_state.upper()]
-    print(
+    logger.info(
         f"Setting switch state to {switch_state.name} and current limit to {current_limit} amps"
     )
 
@@ -72,14 +69,14 @@ def control(device: str, switch_state: str, current_limit: float, monitor: bool)
     loop = asyncio.get_event_loop()
 
     def handler(frame: vebus.Frame):
-        print_frame(frame)
+        frame.log(logger)
         if isinstance(frame, vebus.ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
         if isinstance(frame, vebus.StateFrame):
             nonlocal ack
             ack = True
-            print("Acknowledged!")
+            logger.info("Switch state change acknowledged!")
 
     async def main():
         bus = await vebus.open_bus(device, handler)

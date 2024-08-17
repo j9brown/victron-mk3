@@ -1,14 +1,12 @@
 # Implementation of MK2/MK3 protocol based on the following documentation provided by Victron:
 # https://www.victronenergy.com/upload/documents/Technical-Information-Interfacing-with-VE-Bus-products-MK2-Protocol-3-14.pdf
 import asyncio
-from enum import IntEnum, IntFlag
+from enum import Enum, IntEnum, IntFlag
+import logging
 import serial
 import serial_asyncio
 import time
 from typing import Callable, List
-
-# Enable printing of protocol bytes
-DEBUG_MESSAGES = False
 
 # Although the documentation says that the AC Info frame should report different
 # values in the L1 packet to indicate the numnber of phases, it doesn't actually
@@ -18,6 +16,8 @@ HACK_OVERRIDE_AC_NUM_PHASES = 2
 # The Multiplus II sometimes reports a negative inverter current even though
 # the variable info indicates it is supposed to be unsigned. Override it.
 HACK_OVERRIDE_AC_INVERTER_CURRENT_SIGNEDNESS = True
+
+logger = logging.getLogger("victron_mk3")
 
 
 class SwitchState(IntEnum):
@@ -88,12 +88,16 @@ class VariableInfo:
                 raw -= 0x1000000
         else:
             assert False
-        # print(f'{raw}, {self._signed}, {self._scale}, {self._offset}')
         return self._scale * (raw + self._offset)
 
 
 class Frame:
-    pass
+    def log(self, logger: logging.Logger):
+        logger.info(self.__class__.__qualname__)
+        for field, value in vars(self).items():
+            if isinstance(value, Enum):
+                value = value.name
+            logger.info(f"  {field}: {value}")
 
 
 class VersionFrame(Frame):
@@ -221,14 +225,14 @@ class VEBus:
     # - if 0, the value is set to its minimum
     # - otherwise it is set to the provided value and clamped to the range supported by the device
     def send_state_request(
-        self, switch_state: SwitchState, current_limit: float|None = None
+        self, switch_state: SwitchState, current_limit: float | None = None
     ):
         if current_limit is None:
             value = 0x8000
         elif current_limit <= 0:
             value = 0
         else:
-            value = min(int(current_limit * 10), 0x7fff)
+            value = min(int(current_limit * 10), 0x7FFF)
         self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x81])
 
     def _send_frame(self, command: int, data: List[int]):
@@ -238,8 +242,8 @@ class VEBus:
         msg[2] = ord(command)
         msg[3:-1] = data
         msg[-1] = (256 - sum(msg[:-1])) & 255
-        if DEBUG_MESSAGES:
-            print(f">> {msg.hex()}")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f">> {msg.hex()}")
         self._writer.write(msg)
 
     async def listen(self):
@@ -255,13 +259,12 @@ class VEBus:
                     msg = await self._reader.readexactly(size[0] + 1)
             except TimeoutError:
                 # May have lost stream synchronization, start over and hope to recover eventually
-                if DEBUG_MESSAGES:
-                    print('** Read timeout')
+                logger.debug("** Read timeout")
                 continue
 
             if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
-                if DEBUG_MESSAGES:
-                    print(f"<< {size.hex()}{msg.hex()}")
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"<< {size.hex()}{msg.hex()}")
                 self._handle_frame(msg)
 
     def _handle_frame(self, msg: bytes):
