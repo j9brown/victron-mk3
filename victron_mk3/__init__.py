@@ -92,12 +92,12 @@ class VariableInfo:
 
 
 class Frame:
-    def log(self, logger: logging.Logger) -> None:
-        logger.info(self.__class__.__qualname__)
+    def log(self, logger: logging.Logger, level: int) -> None:
+        logger.log(level, self.__class__.__qualname__)
         for field, value in vars(self).items():
             if isinstance(value, Enum):
                 value = value.name
-            logger.info(f"  {field}: {value}")
+            logger.log(level, f"  {field}: {value}")
 
 
 class VersionFrame(Frame):

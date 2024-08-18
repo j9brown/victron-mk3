@@ -24,7 +24,7 @@ def monitor(device: str) -> None:
     loop = asyncio.get_event_loop()
 
     def handler(frame: Frame) -> None:
-        frame.log(logger)
+        frame.log(logging.INFO, logger)
         if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
@@ -69,7 +69,7 @@ def control(device: str, switch_state: str, current_limit: float, monitor: bool)
     loop = asyncio.get_event_loop()
 
     def handler(frame: Frame) -> None:
-        frame.log(logger)
+        frame.log(logging.INFO, logger)
         if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
             nonlocal ac_num_phases
             ac_num_phases = frame.ac_num_phases
