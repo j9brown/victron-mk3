@@ -21,18 +21,17 @@ devices.
 
 ## Command Line Interface
 
-This repository includes a simple command-line interface for testing the behavior
-of the interface.
-
-After connecting the MK3 interface, determine the path of the serial port device
-to include on the command-line. In these examples, it is 'tty.usbserial-HQ2217T743W'
-but yours may be different depending on the platform.
+This repository includes a simple tool for testing the behavior of the MK3 interface.
 
 Before running the CLI, install the required packages.
 
 ```
 pip install -r requirements.txt
 ```
+
+After attaching the MK3 interface, determine the path of the serial port device
+to include on the command-line. In these examples, it is 'tty.usbserial-HQ2217T743W'
+but yours may be different depending on your platform.
 
 ### Monitor the status of an attached device
 
@@ -78,6 +77,15 @@ The front panel switch and other inputs on the device may override the remote sw
   will not operate regardless of the remote switch state set by this interface.
 - Other conditions determined by the device may also apply such as constaints on the
   mains voltage and battery state of charge.
+
+### Probe whether a device is attached to the interface and operational
+
+This command attempts to connect to a device using the interface and reports whether
+it is operational or the reason it was unable to connect.
+
+```
+python3 cli.py probe /dev/tty.usbserial-HQ2217T743W
+```
 
 ## Build for distribution
 

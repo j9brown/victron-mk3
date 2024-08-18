@@ -67,37 +67,14 @@ class SwitchRegister(IntFlag):
     REMOTE_GENERATOR_SELECTED = 0x80
 
 
-class VariableInfo:
-    def __init__(self, signed: bool, scale: float, offset: int) -> None:
-        self._signed = signed
-        self._scale = scale
-        self._offset = offset
-
-    def parse(self, raw: bytes) -> float:
-        if len(raw) == 1:
-            raw = raw[0]
-            if self._signed and raw >= 0x80:
-                raw -= 0x100
-        elif len(raw) == 2:
-            raw = raw[0] | raw[1] << 8
-            if self._signed and raw >= 0x8000:
-                raw -= 0x10000
-        elif len(raw) == 3:
-            raw = raw[0] | raw[1] << 8 | raw[2] << 16
-            if self._signed and raw >= 0x800000:
-                raw -= 0x1000000
-        else:
-            assert False
-        return self._scale * (raw + self._offset)
-
-
 class Frame:
     def log(self, logger: logging.Logger, level: int) -> None:
-        logger.log(level, self.__class__.__qualname__)
-        for field, value in vars(self).items():
-            if isinstance(value, Enum):
-                value = value.name
-            logger.log(level, f"  {field}: {value}")
+        if logger.isEnabledFor(level):
+            logger.log(level, self.__class__.__qualname__)
+            for field, value in vars(self).items():
+                if isinstance(value, Enum):
+                    value = value.name
+                logger.log(level, f"  {field}: {value}")
 
 
 class VersionFrame(Frame):
@@ -176,42 +153,198 @@ class StateFrame(Frame):
         pass
 
 
-class TimeoutFrame(Frame):
-    def __init__(self) -> None:
+class Fault(Enum):
+    INACCESSIBLE = 1
+    """The interface could not be opened at the provided path."""
+
+    IO_ERROR = 2
+    """An error occurred while communicating with the interface."""
+
+    EXCEPTION = 3
+    """An unhandled exception occurred."""
+
+
+class Handler:
+    def on_frame(self, frame: Frame) -> None:
+        """Called when a frame is received from the interface."""
+        pass
+
+    def on_idle(self) -> None:
+        """Called when the interface has not sent a frame for a while. When functioning
+        normally, the interface sends a VersionFrame every second when there is no
+        other traffic. So when the interface goes completely idle, it typically indicates
+        that the device has been disconnected from it or has been powered off."""
+        pass
+
+    def on_fault(self, fault: Fault) -> None:
+        """Called when an unrecoverable communication error occurs."""
         pass
 
 
-Handler = Callable[[int], None]
-
-
-class VictronMK3Exception(Exception):
-    pass
-
-
 class VictronMK3:
-    _VARIABLE_INFO_REQUEST_TIMEOUT = 2  # seconds
-    _READ_TIMEOUT = 2
+    def __init__(self, path: str) -> None:
+        """Specifies the path of the serial port to which the Victron MK3 interface is connected."""
+        self._path: str = path
+        self._driver: _VictronMK3Driver = None
+        self._driver_task: asyncio.Task = None
 
-    def __init__(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        handler: Handler,
+    async def start(self, handler: Handler) -> None:
+        """Connects to the Victron MK3 interface and starts delivering events to the handler."""
+        assert self._driver_task is None
+        ready = asyncio.Event()
+        self._driver = _VictronMK3Driver()
+        self._driver_task = asyncio.create_task(
+            self._driver.run(self._path, handler, ready)
+        )
+        await ready.wait()
+
+    async def stop(self) -> None:
+        """Disconnects from the Victron MK3 interface and stops delivering events to the previous handler.
+        After this method completes the Victron MK3 instance can be reused for another connection."""
+        assert self._driver is not None
+        self._driver = None
+        self._driver_task.cancel()
+        try:
+            await self._driver_task
+        except asyncio.CancelledError:
+            pass
+        self._driver_task = None
+
+    def send_version_request(self) -> None:
+        """Sends a request for a VersionFrame.
+        Does nothing if the interface is not running."""
+        if self._driver is not None:
+            self._driver.send_version_request()
+
+    def send_led_request(self) -> None:
+        """Sends a request for a LEDFrame.
+        Does nothing if the interface is not running."""
+        if self._driver is not None:
+            self._driver.send_led_request()
+
+    def send_dc_request(self) -> None:
+        """Sends a request for a DCFrame.
+        Does nothing if the interface is not running."""
+        if self._driver is not None:
+            self._driver.send_dc_request()
+
+    def send_ac_request(self, phase: int) -> None:
+        """Sends a request for an ACFrame.
+        Does nothing if the interface is not running."""
+        assert phase >= 1 and phase <= 4
+        if self._driver is not None:
+            self._driver.send_ac_request(phase)
+
+    def send_config_request(self) -> None:
+        """Sends a request for a ConfigFrame.
+        Does nothing if the interface is not running."""
+        if self._driver is not None:
+            self._driver.send_config_request()
+
+    def send_state_request(
+        self, switch_state: SwitchState, current_limit: float | None = None
     ) -> None:
-        self._reader = reader
-        self._writer = writer
-        self._handler = handler
+        """Sends a request to set the remote switch state and current limit in amps.
+        If the requested current limit is None, the actual current limit is set to its maximum.
+        If the requested current limit is 0 or negative, the actual current limit is set to its minimum.
+        Otherwise the actual current limit is clamped to the range supported by the device.
+        Does nothing if the interface is not running."""
+        if self._driver is not None:
+            self._driver.send_state_request(switch_state, current_limit)
+
+
+class _VictronMK3Driver:
+    IDLE_TIMEOUT = 2  # seconds
+    VARIABLE_INFO_REQUEST_TIMEOUT = 2  # seconds
+
+    class VariableInfo:
+        def __init__(self, signed: bool, scale: float, offset: int) -> None:
+            self._signed = signed
+            self._scale = scale
+            self._offset = offset
+
+        def parse(self, raw: bytes) -> float:
+            if len(raw) == 1:
+                raw = raw[0]
+                if self._signed and raw >= 0x80:
+                    raw -= 0x100
+            elif len(raw) == 2:
+                raw = raw[0] | raw[1] << 8
+                if self._signed and raw >= 0x8000:
+                    raw -= 0x10000
+            elif len(raw) == 3:
+                raw = raw[0] | raw[1] << 8 | raw[2] << 16
+                if self._signed and raw >= 0x800000:
+                    raw -= 0x1000000
+            else:
+                assert False
+            return self._scale * (raw + self._offset)
+
+    def __init__(self) -> None:
+        self._writer: asyncio.StreamWriter = None
         self._w_nonce: int = 0
         self._w_completion: Callable[[bytes], None] = None
         self._variable_id_queue = [0, 1, 2, 3, 4, 5, 7, 8]
         self._variable_info = {}
         self._variable_info_request_time = None
 
-    def close(self) -> None:
-        self._writer.close()
+    async def run(self, path: str, handler: Handler, ready: asyncio.Event) -> None:
+        fault = Fault.EXCEPTION
+        try:
+            # Open the port
+            try:
+                reader, self._writer = await serial_asyncio.open_serial_connection(
+                    url=path,
+                    baudrate=2400,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                )
+            except serial.SerialException:
+                fault = Fault.INACCESSIBLE
+                raise
+            finally:
+                ready.set()
 
-    async def wait_closed(self) -> None:
-        await self._writer.wait_closed()
+            # Reset the interface
+            # The sleep may not actually needed but the reset seems more reliable this way
+            self._send_frame("R", [])
+            await asyncio.sleep(1)
+            self.send_version_request()
+            self._populate_next_variable_info()
+
+            # Listen for frames until the task is cancelled
+            while True:
+                try:
+                    async with asyncio.timeout(_VictronMK3Driver.IDLE_TIMEOUT):
+                        size = await reader.readexactly(1)
+                        msg = await reader.readexactly(size[0] + 1)
+                except TimeoutError:
+                    # May have lost stream synchronization, start over and hope to recover eventually
+                    logger.debug("** Read timeout (interface is idle)")
+                    handler.on_idle()
+                    continue
+                except serial.SerialException:
+                    fault = Fault.IO_ERROR
+                    raise
+
+                if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(f"<< {size.hex()}{msg.hex()}")
+                    self._handle_frame(handler, msg)
+        except Exception:
+            # Report faults
+            logger.debug(f"Fault: {fault}", exc_info=True)
+            handler.on_fault(fault)
+        finally:
+            # Close the port
+            writer = self._writer
+            self._writer = None
+            if writer is not None:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except serial.SerialException:
+                    pass
 
     def send_version_request(self) -> None:
         self._send_frame("V", [])
@@ -229,12 +362,8 @@ class VictronMK3:
     def send_config_request(self) -> None:
         self._send_frame("F", [5])
 
-    # current limit is in amps
-    # - if None, the limit is set to its maximum
-    # - if 0, the value is set to its minimum
-    # - otherwise it is set to the provided value and clamped to the range supported by the device
     def send_state_request(
-        self, switch_state: SwitchState, current_limit: float | None = None
+        self, switch_state: SwitchState, current_limit: float | None
     ) -> None:
         if current_limit is None:
             value = 0x8000
@@ -253,48 +382,26 @@ class VictronMK3:
         msg[-1] = (256 - sum(msg[:-1])) & 255
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(f">> {msg.hex()}")
-        try:
-            self._writer.write(msg)
-        except serial.SerialException:
-            raise VictronMK3Exception("Communication error")
+        if self._writer is not None:
+            try:
+                self._writer.write(msg)
+            except serial.SerialException:
+                # Assume that a failure to write will also manifest as a failure
+                # to read in the driver task and it will then be reported to the handler.
+                pass
 
-    async def listen(self) -> None:
-        await self._reset_interface()
-        self._populate_next_variable_info()
-
-        try:
-            while True:
-                try:
-                    async with asyncio.timeout(VictronMK3._READ_TIMEOUT):
-                        size = await self._reader.read(1)
-                        if len(size) != 1:
-                            break
-                        msg = await self._reader.readexactly(size[0] + 1)
-                except TimeoutError:
-                    # May have lost stream synchronization, start over and hope to recover eventually
-                    logger.debug("** Read timeout")
-                    self._handler(TimeoutFrame())
-                    continue
-
-                if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
-                    if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug(f"<< {size.hex()}{msg.hex()}")
-                    self._handle_frame(msg)
-        except serial.SerialException:
-            raise VictronMK3Exception("Communication error")
-
-    def _handle_frame(self, msg: bytes) -> None:
+    def _handle_frame(self, handler: Handler, msg: bytes) -> None:
         if len(msg) >= 2 and msg[0] == 0xFF:  # Command Frame
             if msg[1] == ord("V") and len(msg) >= 6:
-                self._handler(
+                handler.on_frame(
                     VersionFrame(
                         version=msg[2] | msg[3] << 8 | msg[4] << 16 | msg[5] << 24
                     )
                 )
             elif msg[1] == ord("L") and len(msg) >= 4:
-                self._handler(LEDFrame(on=LEDState(msg[2]), blink=LEDState(msg[3])))
+                handler.on_frame(LEDFrame(on=LEDState(msg[2]), blink=LEDState(msg[3])))
             elif msg[1] == ord("S"):
-                self._handler(StateFrame())
+                handler.on_frame(StateFrame())
             elif msg[1] == ord("W"):
                 self._handle_w_response(0, msg)
             elif msg[1] == ord("X"):
@@ -306,7 +413,7 @@ class VictronMK3:
         elif len(msg) >= 15 and msg[0] == 0x20:  # Info Frame
             if len(self._variable_id_queue) == 0:  # Need variables populated for these
                 if msg[5] == 0x0C:
-                    self._handler(
+                    handler.on_frame(
                         DCFrame(
                             dc_voltage=self._variable_info[4].parse(msg[6:8]),
                             dc_current_to_inverter=self._variable_info[5].parse(
@@ -315,13 +422,13 @@ class VictronMK3:
                             dc_current_from_charger=self._variable_info[5].parse(
                                 msg[11:14]
                             ),
-                            ac_inverter_frequency=VictronMK3._period_to_frequency(
+                            ac_inverter_frequency=_VictronMK3Driver._period_to_frequency(
                                 self._variable_info[7].parse(msg[14:15])
                             ),
                         )
                     )
                 elif msg[5] >= 0x05 and msg[5] <= 0x0B:
-                    self._handler(
+                    handler.on_frame(
                         ACFrame(
                             ac_phase=max(9 - msg[5], 1),
                             ac_num_phases=max(msg[5] - 7, 0)
@@ -336,7 +443,7 @@ class VictronMK3:
                             ),
                             ac_inverter_current=self._variable_info[3].parse(msg[12:14])
                             * msg[2],
-                            ac_mains_frequency=VictronMK3._period_to_frequency(
+                            ac_mains_frequency=_VictronMK3Driver._period_to_frequency(
                                 self._variable_info[8].parse(msg[14:15])
                             ),
                         )
@@ -344,7 +451,7 @@ class VictronMK3:
             else:
                 self._populate_next_variable_info()
         elif len(msg) >= 13 and msg[0] == 0x41:  # Config Frame
-            self._handler(
+            handler.on_frame(
                 ConfigFrame(
                     last_active_ac_input=msg[5] & 0x03,
                     current_limit_overridden_by_panel=msg[5] & 0x04 != 0,
@@ -358,12 +465,6 @@ class VictronMK3:
                 )
             )
 
-    async def _reset_interface(self) -> None:
-        # The sleep may not actually needed but the reset seems more reliable this way
-        self._send_frame("R", [])
-        await asyncio.sleep(1)
-        self.send_version_request()
-
     def _populate_next_variable_info(self) -> None:
         if len(self._variable_id_queue) == 0:
             return
@@ -371,7 +472,7 @@ class VictronMK3:
         if (
             self._variable_info_request_time is not None
             and self._variable_info_request_time
-            + VictronMK3._VARIABLE_INFO_REQUEST_TIMEOUT
+            + _VictronMK3Driver.VARIABLE_INFO_REQUEST_TIMEOUT
             > now
         ):
             return
@@ -400,7 +501,9 @@ class VictronMK3:
             id = self._variable_id_queue.pop(0)
             if HACK_OVERRIDE_AC_INVERTER_CURRENT_SIGNEDNESS and id == 3:
                 signed = True
-            self._variable_info[id] = VariableInfo(signed, scale, offset)
+            self._variable_info[id] = _VictronMK3Driver.VariableInfo(
+                signed, scale, offset
+            )
             self._populate_next_variable_info()
 
     def _send_w_request(self, msg: bytes, completion: Callable[[bytes], None]) -> None:
@@ -419,14 +522,52 @@ class VictronMK3:
         return round(0 if period == 0 else 10 / period, 2)
 
 
-async def open_victron_mk3(device: str, handler: Handler) -> VictronMK3:
-    try:
-        reader, writer = await serial_asyncio.open_serial_connection(
-            url=device,
-            baudrate=2400,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-        )
-    except serial.SerialException:
-        raise VictronMK3Exception(f"Failed to open serial port {device}")
-    return VictronMK3(reader, writer, handler)
+class ProbeResult(Enum):
+    OK = 0
+    """The device was present and responsive."""
+
+    INACCESSIBLE = 1
+    """The interface could not be opened at the provided path."""
+
+    IO_ERROR = 2
+    """An error occurred while communicating with the interface."""
+
+    UNRESPONSIVE = 3
+    """The interface did not respond to requests."""
+
+    EXCEPTION = 4
+    """An unhandled exception occurred."""
+
+
+class _ProbeHandler(Handler):
+    FAULT_MAP = {
+        Fault.INACCESSIBLE: ProbeResult.INACCESSIBLE,
+        Fault.IO_ERROR: ProbeResult.IO_ERROR,
+        Fault.EXCEPTION: ProbeResult.EXCEPTION,
+    }
+
+    def __init__(self) -> None:
+        self.result = ProbeResult.INACCESSIBLE
+        self.finished = asyncio.Event()
+
+    def on_frame(self, frame: Frame) -> None:
+        self.result = ProbeResult.OK
+        self.finished.set()
+
+    def on_idle(self) -> None:
+        self.result = ProbeResult.UNRESPONSIVE
+        self.finished.set()
+
+    def on_fault(self, fault: Fault) -> None:
+        self.result = _ProbeHandler.FAULT_MAP[fault]
+        self.finished.set()
+
+
+async def probe(path: str) -> ProbeResult:
+    """Attempts to connect to a Victron MK3 interface then disconnects and reports what happened."""
+    handler = _ProbeHandler()
+    mk3 = VictronMK3(path)
+    await mk3.start(handler)
+    await handler.finished.wait()
+    await mk3.stop()
+    return handler.result
