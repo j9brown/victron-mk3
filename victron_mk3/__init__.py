@@ -28,6 +28,7 @@ class SwitchState(IntEnum):
 
 
 class LEDState(IntFlag):
+    OFF = 0
     MAINS = 0x01
     ABSORPTION = 0x02
     BULK = 0x04
@@ -73,7 +74,7 @@ class Frame:
             logger.log(level, self.__class__.__qualname__)
             for field, value in vars(self).items():
                 if isinstance(value, Enum):
-                    value = value.name
+                    value = str(value) if value.name is None else value.name
                 logger.log(level, f"  {field}: {value}")
 
 
