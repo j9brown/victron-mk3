@@ -19,7 +19,7 @@ This library has been tested with the following devices:
 Please inform the author if you test this library with other potentially compatible
 devices.
 
-## Command Line Interface
+## Command line interface
 
 This repository includes a simple tool for testing the behavior of the MK3 interface.
 

@@ -2,14 +2,13 @@ import asyncio
 import click
 import logging
 from victron_mk3 import (
-    ACFrame,
     Fault,
     Frame,
     Handler,
-    ProbeResult,
     SwitchState,
     StateFrame,
     VictronMK3,
+    AC_PHASES_SUPPORTED,
     logger,
     probe,
 )
@@ -41,7 +40,7 @@ def monitor(path: str) -> None:
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_dc_request()
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            for phase in range(1, handler.ac_num_phases + 1):
+            for phase in range(1, AC_PHASES_SUPPORTED + 1):
                 mk3.send_ac_request(phase)
                 await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_config_request()
@@ -86,7 +85,7 @@ def control(path: str, switch_state: str, current_limit: float, monitor: bool):
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_dc_request()
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            for phase in range(1, handler.ac_num_phases + 1):
+            for phase in range(1, AC_PHASES_SUPPORTED + 1):
                 mk3.send_ac_request(phase)
                 await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_config_request()
@@ -114,14 +113,11 @@ def probe_command(path: str):
 
 class MonitorHandler(Handler):
     def __init__(self):
-        self.ac_num_phases = 1
         self.state_frame_seen = False
         self.faulted = False
 
     def on_frame(self, frame: Frame) -> None:
         frame.log(logger, logging.INFO)
-        if isinstance(frame, ACFrame) and frame.ac_num_phases != 0:
-            self.ac_num_phases = frame.ac_num_phases
         if isinstance(frame, StateFrame):
             self.state_frame_seen = True
 

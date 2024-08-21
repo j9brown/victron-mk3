@@ -8,14 +8,12 @@ import serial_asyncio
 import time
 from typing import Callable, List
 
-# Although the documentation says that the AC Info frame should report different
-# values in the L1 packet to indicate the numnber of phases, it doesn't actually
-# seem to work that way on my Multiplus II. Hardcode the number of phases for now.
-HACK_OVERRIDE_AC_NUM_PHASES = 2
-
 # The Multiplus II sometimes reports a negative inverter current even though
 # the variable info indicates it is supposed to be unsigned. Override it.
 HACK_OVERRIDE_AC_INVERTER_CURRENT_SIGNEDNESS = True
+
+# The protocol supports up to 4 phases numbered from 1 to 4
+AC_PHASES_SUPPORTED = 4
 
 logger: logging.Logger = logging.getLogger("victron_mk3")
 
@@ -128,9 +126,14 @@ class DCFrame(Frame):
 
 
 class ACFrame(Frame):
+    """
+    Note: The reported 'ac_num_phases' appears to be incorrect for the Multiplus-II 2x120V,
+          it reports 1 phase instead of 2. It might be best to ignore this field altogether.
+    """
+
     def __init__(
         self,
-        ac_phase: int,
+        ac_phase: int,  # ranges from 1 to 4
         ac_num_phases: int,  # only provided when phase is 1, otherwise it is 0
         device_state: DeviceState,
         ac_mains_voltage: float,
@@ -232,7 +235,7 @@ class VictronMK3:
     def send_ac_request(self, phase: int) -> None:
         """Sends a request for an ACFrame.
         Does nothing if the interface is not running."""
-        assert phase >= 1 and phase <= 4
+        assert phase >= 1 and phase <= AC_PHASES_SUPPORTED
         if self._driver is not None:
             self._driver.send_ac_request(phase)
 
@@ -432,9 +435,7 @@ class _VictronMK3Driver:
                     handler.on_frame(
                         ACFrame(
                             ac_phase=max(9 - msg[5], 1),
-                            ac_num_phases=max(msg[5] - 7, 0)
-                            if HACK_OVERRIDE_AC_NUM_PHASES == 0 or msg[5] < 8
-                            else HACK_OVERRIDE_AC_NUM_PHASES,
+                            ac_num_phases=max(msg[5] - 7, 0),
                             device_state=DeviceState(msg[4]),
                             ac_mains_voltage=self._variable_info[0].parse(msg[6:8]),
                             ac_mains_current=self._variable_info[1].parse(msg[8:10])
