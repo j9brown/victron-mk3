@@ -46,7 +46,7 @@ python3 cli.py monitor /dev/tty.usbserial-HQ2217T743W
 
 This command sets the remote switch state to `on` and the current limit to its maximum.
 
-Note that the remote switch state and current limit may persist even after the interface
+Note that the remote switch state and current limit persists even after the interface
 has been disconnected or the device is turned off. Use the following command to restore
 the device to its default behavior.
 
