@@ -29,7 +29,7 @@ import logging
 import serial
 import serial_asyncio
 import time
-from typing import Callable, List
+from typing import Callable, List, Type
 
 # The Multiplus II sometimes reports a negative inverter current even though
 # the variable info indicates it is supposed to be unsigned. Override it.
@@ -109,7 +109,7 @@ DEFAULT_INTERFACE_FLAGS = InterfaceFlags.PANEL_DETECT | InterfaceFlags.UNDOCUMEN
 """Default state of the interface when it is powered on."""
 
 
-class Frame:
+class Response:
     def log(self, logger: logging.Logger, level: int) -> None:
         if logger.isEnabledFor(level):
             logger.log(level, self.__class__.__qualname__)
@@ -119,18 +119,18 @@ class Frame:
                 logger.log(level, f"  {field}: {value}")
 
 
-class VersionFrame(Frame):
+class VersionResponse(Response):
     def __init__(self, version: int) -> None:
         self.version = version
 
 
-class LEDFrame(Frame):
+class LEDResponse(Response):
     def __init__(self, on: LEDState, blink: LEDState) -> None:
         self.on = on
         self.blink = blink
 
 
-class ConfigFrame(Frame):
+class ConfigResponse(Response):
     def __init__(
         self,
         last_active_ac_input: int,
@@ -154,7 +154,7 @@ class ConfigFrame(Frame):
         self.switch_register = switch_register
 
 
-class DCFrame(Frame):
+class DCResponse(Response):
     def __init__(
         self,
         dc_voltage: float,
@@ -168,7 +168,7 @@ class DCFrame(Frame):
         self.ac_inverter_frequency = ac_inverter_frequency
 
 
-class ACFrame(Frame):
+class ACResponse(Response):
     """
     Note: The reported 'ac_num_phases' appears to be incorrect for the Multiplus-II 2x120V,
           it reports 1 phase instead of 2. It might be best to ignore this field altogether.
@@ -195,12 +195,12 @@ class ACFrame(Frame):
         self.ac_mains_frequency = ac_mains_frequency
 
 
-class StateFrame(Frame):
+class StateResponse(Response):
     def __init__(self) -> None:
         pass
 
 
-class InterfaceFrame(Frame):
+class InterfaceResponse(Response):
     def __init__(self, flags: InterfaceFlags) -> None:
         self.flags = flags
 
@@ -217,13 +217,13 @@ class Fault(Enum):
 
 
 class Handler:
-    def on_frame(self, frame: Frame) -> None:
-        """Called when a frame is received from the interface."""
+    def on_response(self, response: Response) -> None:
+        """Called when a response is received from the interface."""
         pass
 
     def on_idle(self) -> None:
         """Called when the interface has not sent a frame for a while. When functioning
-        normally, the interface sends a VersionFrame every second when there is no
+        normally, the interface sends a VersionResponse every second when there is no
         other traffic. So when the interface goes completely idle, it typically indicates
         that the device has gone to sleep or the interface has been disconnected."""
         pass
@@ -262,65 +262,80 @@ class VictronMK3:
             pass
         self._driver_task = None
 
-    def send_interface_request(self, flags: InterfaceFlags | None = None) -> None:
-        """Sends a request for an InterfaceFrame.
-
+    async def send_interface_request(
+        self, flags: InterfaceFlags | None = None
+    ) -> InterfaceResponse:
+        """Sends a request to query or set interface flags.
         If flags is None, reports their current values.
         Otherwise, sets the flags as indicated and reports their new values.
+        Does nothing if the interface is not running.
 
         These flags are lost whenever the interface is disconnected from VE.Bus or
         the device goes to sleep causing it to lose power even if the interface remains
         plugged into the host computer. Consider periodically resending the flags to
         ensure that they remain active."""
-        if self._driver is not None:
-            self._driver.send_interface_request(flags)
+        if self._driver is None:
+            return None
+        return await self._driver.send_interface_request(flags)
 
-    def send_version_request(self) -> None:
-        """Sends a request for a VersionFrame.
+    async def send_version_request(self) -> VersionResponse:
+        """Sends a request for the firmware version.
         Does nothing if the interface is not running."""
-        if self._driver is not None:
-            self._driver.send_version_request()
+        if self._driver is None:
+            return None
+        return await self._driver.send_version_request()
 
-    def send_led_request(self) -> None:
-        """Sends a request for a LEDFrame.
+    async def send_led_request(self) -> LEDResponse:
+        """Sends a request for the LED state.
         Does nothing if the interface is not running."""
-        if self._driver is not None:
-            self._driver.send_led_request()
+        if self._driver is None:
+            return None
+        return await self._driver.send_led_request()
 
-    def send_dc_request(self) -> None:
-        """Sends a request for a DCFrame.
+    async def send_dc_request(self) -> DCResponse:
+        """Sends a request for DC information.
         Does nothing if the interface is not running."""
-        if self._driver is not None:
-            self._driver.send_dc_request()
+        if self._driver is None:
+            return None
+        return await self._driver.send_dc_request()
 
-    def send_ac_request(self, phase: int) -> None:
-        """Sends a request for an ACFrame.
+    async def send_ac_request(self, phase: int) -> ACResponse:
+        """Sends a request for AC information.
         Does nothing if the interface is not running."""
         assert phase >= 1 and phase <= AC_PHASES_SUPPORTED
-        if self._driver is not None:
-            self._driver.send_ac_request(phase)
+        if self._driver is None:
+            return None
+        return await self._driver.send_ac_request(phase)
 
-    def send_config_request(self) -> None:
-        """Sends a request for a ConfigFrame.
+    async def send_config_request(self) -> ConfigResponse:
+        """Sends a request for device configuration.
         Does nothing if the interface is not running."""
-        if self._driver is not None:
-            self._driver.send_config_request()
+        if self._driver is None:
+            return None
+        return await self._driver.send_config_request()
 
-    def send_state_request(
+    async def send_state_request(
         self, switch_state: SwitchState, current_limit: float | None = None
-    ) -> None:
+    ) -> StateResponse:
         """Sends a request to set the remote switch state and current limit in amps.
         If the requested current limit is None, the actual current limit is set to its maximum.
         If the requested current limit is 0 or negative, the actual current limit is set to its minimum.
         Otherwise the actual current limit is clamped to the range supported by the device.
         Does nothing if the interface is not running."""
-        if self._driver is not None:
-            self._driver.send_state_request(switch_state, current_limit)
+        if self._driver is None:
+            return None
+        return await self._driver.send_state_request(switch_state, current_limit)
 
 
 class _VictronMK3Driver:
-    IDLE_TIMEOUT = 2  # seconds
-    VARIABLE_INFO_REQUEST_TIMEOUT = 2  # seconds
+    # The documentation recommends a 500 ms timeout for most requests.
+    REQUEST_TIMEOUT_SECONDS = 0.5
+
+    # The documentation says that 'F' 5 can take longer and recommends using a timeout greater than 750 ms.
+    REQUEST_TIMEOUT_SECONDS_FOR_CONFIG = 1
+
+    # How long to wait with no data before deciding that the device has gone to sleep.
+    IDLE_TIMEOUT_SECONDS = 5
 
     class VariableInfo:
         def __init__(self, signed: bool, scale: float, offset: int) -> None:
@@ -352,6 +367,7 @@ class _VictronMK3Driver:
         self._variable_id_queue = [0, 1, 2, 3, 4, 5, 7, 8]
         self._variable_info = {}
         self._variable_info_request_time = None
+        self._response_waiters = []
 
     async def run(self, path: str, handler: Handler, ready: asyncio.Event) -> None:
         fault = Fault.EXCEPTION
@@ -370,17 +386,18 @@ class _VictronMK3Driver:
             finally:
                 ready.set()
 
-            # Reset the interface
-            # The sleep may not actually needed but the reset seems more reliable this way
-            self._send_frame("R", [])
-            await asyncio.sleep(1)
-            self.send_version_request()
+            # There seems to be no need to reset the interface and doing so tends to cause
+            # unpredictable delays in resuming communication.
+            # self._send_frame("R", [])
+            # await asyncio.sleep(2)
+
+            self._send_frame("V", [])
             self._populate_next_variable_info()
 
             # Listen for frames until the task is cancelled
             while True:
                 try:
-                    async with asyncio.timeout(_VictronMK3Driver.IDLE_TIMEOUT):
+                    async with asyncio.timeout(_VictronMK3Driver.IDLE_TIMEOUT_SECONDS):
                         size = await reader.readexactly(1)
                         msg = await reader.readexactly(size[0] + 1)
                 except TimeoutError:
@@ -412,31 +429,58 @@ class _VictronMK3Driver:
                 except serial.SerialException:
                     pass
 
-    def send_version_request(self) -> None:
+    async def send_version_request(self) -> VersionResponse:
         self._send_frame("V", [])
+        return await self._wait_for_response(
+            VersionResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
 
-    def send_interface_request(self, flags: InterfaceFlags | None) -> None:
+    async def send_interface_request(
+        self, flags: InterfaceFlags | None
+    ) -> InterfaceResponse:
         if flags is None:
             self._send_frame("H", [])
         else:
             self._send_frame("H", [int(flags)])
+        return await self._wait_for_response(
+            InterfaceResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
 
-    def send_led_request(self) -> None:
+    async def send_led_request(self) -> LEDResponse:
         self._send_frame("L", [])
+        return await self._wait_for_response(
+            LEDResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
 
-    def send_dc_request(self) -> None:
+    async def send_dc_request(self) -> DCResponse:
         self._send_frame("F", [0])
+        return await self._wait_for_response(
+            DCResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
 
-    def send_ac_request(self, phase: int) -> None:
+    async def send_ac_request(self, phase: int) -> ACResponse:
         assert phase >= 1 and phase <= 4
         self._send_frame("F", [phase])
+        return await self._wait_for_response(
+            ACResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+            predicate=lambda response: response.ac_phase == phase,
+        )
 
-    def send_config_request(self) -> None:
+    async def send_config_request(self) -> ConfigResponse:
         self._send_frame("F", [5])
+        return await self._wait_for_response(
+            ConfigResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS_FOR_CONFIG,
+        )
 
-    def send_state_request(
+    async def send_state_request(
         self, switch_state: SwitchState, current_limit: float | None
-    ) -> None:
+    ) -> StateResponse:
         if current_limit is None:
             value = 0x8000
         elif current_limit <= 0:
@@ -444,6 +488,10 @@ class _VictronMK3Driver:
         else:
             value = min(int(current_limit * 10), 0x7FFF)
         self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x80])
+        return await self._wait_for_response(
+            StateResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
 
     def _send_frame(self, command: int, data: List[int]) -> None:
         msg = bytearray(len(data) + 4)
@@ -463,19 +511,24 @@ class _VictronMK3Driver:
                 pass
 
     def _handle_frame(self, handler: Handler, msg: bytes) -> None:
-        if len(msg) >= 2 and msg[0] == 0xFF:  # Command Frame
+        if len(msg) >= 2 and msg[0] == 0xFF:  # Command Response
             if msg[1] == ord("V") and len(msg) >= 6:
-                handler.on_frame(
-                    VersionFrame(
+                self._deliver_response(
+                    handler,
+                    VersionResponse(
                         version=msg[2] | msg[3] << 8 | msg[4] << 16 | msg[5] << 24
-                    )
+                    ),
                 )
             elif msg[1] == ord("H") and len(msg) >= 3:
-                handler.on_frame(InterfaceFrame(InterfaceFlags(msg[2])))
+                self._deliver_response(
+                    handler, InterfaceResponse(InterfaceFlags(msg[2]))
+                )
             elif msg[1] == ord("L") and len(msg) >= 4:
-                handler.on_frame(LEDFrame(on=LEDState(msg[2]), blink=LEDState(msg[3])))
+                self._deliver_response(
+                    handler, LEDResponse(on=LEDState(msg[2]), blink=LEDState(msg[3]))
+                )
             elif msg[1] == ord("S"):
-                handler.on_frame(StateFrame())
+                self._deliver_response(handler, StateResponse())
             elif msg[1] == ord("W"):
                 self._handle_w_response(0, msg)
             elif msg[1] == ord("X"):
@@ -484,11 +537,12 @@ class _VictronMK3Driver:
                 self._handle_w_response(2, msg)
             elif msg[1] == ord("Z"):
                 self._handle_w_response(3, msg)
-        elif len(msg) >= 15 and msg[0] == 0x20:  # Info Frame
+        elif len(msg) >= 15 and msg[0] == 0x20:  # Info Response
             if len(self._variable_id_queue) == 0:  # Need variables populated for these
                 if msg[5] == 0x0C:
-                    handler.on_frame(
-                        DCFrame(
+                    self._deliver_response(
+                        handler,
+                        DCResponse(
                             dc_voltage=self._variable_info[4].parse(msg[6:8]),
                             dc_current_to_inverter=self._variable_info[5].parse(
                                 msg[8:11]
@@ -499,11 +553,12 @@ class _VictronMK3Driver:
                             ac_inverter_frequency=_VictronMK3Driver._period_to_frequency(
                                 self._variable_info[7].parse(msg[14:15])
                             ),
-                        )
+                        ),
                     )
                 elif msg[5] >= 0x05 and msg[5] <= 0x0B:
-                    handler.on_frame(
-                        ACFrame(
+                    self._deliver_response(
+                        handler,
+                        ACResponse(
                             ac_phase=max(9 - msg[5], 1),
                             ac_num_phases=max(msg[5] - 7, 0),
                             device_state=DeviceState(msg[4]),
@@ -518,13 +573,14 @@ class _VictronMK3Driver:
                             ac_mains_frequency=_VictronMK3Driver._period_to_frequency(
                                 self._variable_info[8].parse(msg[14:15])
                             ),
-                        )
+                        ),
                     )
             else:
                 self._populate_next_variable_info()
-        elif len(msg) >= 13 and msg[0] == 0x41:  # Config Frame
-            handler.on_frame(
-                ConfigFrame(
+        elif len(msg) >= 13 and msg[0] == 0x41:  # Config Response
+            self._deliver_response(
+                handler,
+                ConfigResponse(
                     last_active_ac_input=msg[5] & 0x03,
                     current_limit_overridden_by_panel=msg[5] & 0x04 != 0,
                     digital_multi_control_dedicated=msg[5] & 0x08 != 0,
@@ -534,8 +590,40 @@ class _VictronMK3Driver:
                     maximum_current_limit=(msg[8] | msg[9] << 8) / 10,
                     actual_current_limit=(msg[10] | msg[11] << 8) / 10,
                     switch_register=SwitchRegister(msg[12]),
-                )
+                ),
             )
+
+    # async def _wait_for_response[T: Response](
+    #     self, cls: type[T], timeout: float, predicate: Callable[[T], bool] | None = None -> T | None:
+    async def _wait_for_response(
+        self,
+        cls: Type,
+        timeout: float,
+        predicate: Callable[[Response], bool] | None = None,
+    ) -> Response | None:
+        event = asyncio.Event()
+        waiter = [cls, predicate, event, None]
+        try:
+            self._response_waiters.append(waiter)
+            async with asyncio.timeout(timeout):
+                await event.wait()
+            return waiter[3]
+        except TimeoutError:
+            return None
+        finally:
+            self._response_waiters.remove(waiter)
+
+    def _deliver_response(self, handler: Handler, response: Response) -> None:
+        for waiter in self._response_waiters:
+            if (
+                isinstance(response, waiter[0])
+                and (waiter[1] is None or waiter[1](response))
+                and waiter[3] is None
+            ):
+                waiter[3] = response
+                waiter[2].set()
+                break
+        handler.on_response(response)
 
     def _populate_next_variable_info(self) -> None:
         if len(self._variable_id_queue) == 0:
@@ -544,7 +632,7 @@ class _VictronMK3Driver:
         if (
             self._variable_info_request_time is not None
             and self._variable_info_request_time
-            + _VictronMK3Driver.VARIABLE_INFO_REQUEST_TIMEOUT
+            + _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS
             > now
         ):
             return
@@ -552,7 +640,7 @@ class _VictronMK3Driver:
         self._variable_info_request_time = now
         id = self._variable_id_queue[0]
 
-        # The address frame may be lost between power cycles of the equipment so
+        # The current address may be lost between power cycles of the equipment so
         # might as well resend it each time.
         self._send_frame("A", [1, 0])
         self._send_w_request(
@@ -622,7 +710,8 @@ class _ProbeHandler(Handler):
         self.result = ProbeResult.INACCESSIBLE
         self.finished = asyncio.Event()
 
-    def on_frame(self, frame: Frame) -> None:
+    def on_response(self, frame: Response) -> None:
+        frame.log(logger, logging.DEBUG)
         self.result = ProbeResult.OK
         self.finished.set()
 

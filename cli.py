@@ -3,18 +3,17 @@ import click
 import logging
 from victron_mk3 import (
     Fault,
-    Frame,
+    Response,
     Handler,
     InterfaceFlags,
     SwitchState,
-    StateFrame,
     VictronMK3,
     AC_PHASES_SUPPORTED,
     logger,
     probe,
 )
 
-DELAY_BETWEEN_REQUESTS = 2  # seconds
+POLL_INTERVAL_SECONDS = 2
 
 
 logging.basicConfig(format="%(message)s")
@@ -37,16 +36,13 @@ def monitor(path: str) -> None:
         await mk3.start(handler)
 
         while not handler.faulted:
-            mk3.send_interface_request()
-            mk3.send_led_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            mk3.send_dc_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+            await mk3.send_interface_request()
+            await mk3.send_led_request()
+            await mk3.send_dc_request()
             for phase in range(1, AC_PHASES_SUPPORTED + 1):
-                mk3.send_ac_request(phase)
-                await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            mk3.send_config_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+                await mk3.send_ac_request(phase)
+            await mk3.send_config_request()
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
         await mk3.stop()
 
@@ -85,24 +81,21 @@ def control(
         mk3 = VictronMK3(path)
         await mk3.start(handler)
 
-        while not handler.state_frame_seen and not handler.faulted:
-            mk3.send_interface_request(flags)
-            mk3.send_state_request(switch_state, current_limit)
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            mk3.send_config_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+        state_response = None
+        while state_response is None and not handler.faulted:
+            await mk3.send_interface_request(flags)
+            state_response = await mk3.send_state_request(switch_state, current_limit)
+            await mk3.send_config_request()
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
         while monitor and not handler.faulted:
-            mk3.send_interface_request(flags)
-            mk3.send_led_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            mk3.send_dc_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+            await mk3.send_interface_request(flags)
+            await mk3.send_led_request()
+            await mk3.send_dc_request()
             for phase in range(1, AC_PHASES_SUPPORTED + 1):
-                mk3.send_ac_request(phase)
-                await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
-            mk3.send_config_request()
-            await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
+                await mk3.send_ac_request(phase)
+            await mk3.send_config_request()
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
         await mk3.stop()
 
@@ -126,13 +119,10 @@ def probe_command(path: str):
 
 class MonitorHandler(Handler):
     def __init__(self):
-        self.state_frame_seen = False
         self.faulted = False
 
-    def on_frame(self, frame: Frame) -> None:
-        frame.log(logger, logging.INFO)
-        if isinstance(frame, StateFrame):
-            self.state_frame_seen = True
+    def on_response(self, response: Response) -> None:
+        response.log(logger, logging.INFO)
 
     def on_idle(self) -> None:
         logger.info("Idle")
