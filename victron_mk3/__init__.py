@@ -1,5 +1,28 @@
 # Implementation of MK2/MK3 protocol based on the following documentation provided by Victron:
 # https://www.victronenergy.com/upload/documents/Technical-Information-Interfacing-with-VE-Bus-products-MK2-Protocol-3-14.pdf
+#
+# Extra information from:
+# https://community.victronenergy.com/questions/1096/mk3-usb-s-state-command-does-not-change-panel-swit.html
+#
+# For the MK3 the jumpers were replaced by software control of the VE.Bus standby and panel detect lines.
+# Unfortunately this was not mentioned in the "Interfacing with VE.Bus products - MK2 Protocol" documentation.
+# We will add it.
+#
+# To get you going, here is the command description.
+#
+# Command: 'H' <Line state>
+# Reply: 'H' <Line sate>
+#
+# <Line state> is specified as follows. Setting a bit pulls the line to GND
+#
+# Bit number    Meaning
+#   0           Panel detect
+#   1           Standby
+#
+# The above command is supported by the MK3 only.
+# Please note that the MK3 chip in the USB dongle is powered through the VE.Bus, when loosing VE.Bus power
+# the above lines will become floating again.
+#
 import asyncio
 from enum import Enum, IntEnum, IntFlag
 import logging
@@ -64,6 +87,26 @@ class SwitchRegister(IntFlag):
     ONBOARD_REMOTE_SWITCH_INVERT = 0x40
     # REMOTE_GENERATOR_SELECTED: unknown, always seems to be off, maybe used with VEConfigure assistants?
     REMOTE_GENERATOR_SELECTED = 0x80
+
+
+class InterfaceFlags(IntFlag):
+    """Flags that control VE.Bus GPIOs within the MK3 interface.
+    The default state of these flags is 0x05, suggesting that there exists another flag of
+    unknown purpose at bit 2."""
+
+    PANEL_DETECT = 0x01
+    """When enabled, the device will not turn on in response to the front
+    panel switch unless the interface sets the remote switch state to allow it."""
+    STANDBY = 0x02
+    """When enabled, the device will be prevented from going to sleep while it is off
+    thereby allowing the interface to communicate with device and turn it back on again later.
+    The device draws more energy from the batteries while in standby than it would while sleeping."""
+    UNDOCUMENTED_04 = 0x04
+    """Undocumented flag observed in the default state of the interface when it is powered on."""
+
+
+DEFAULT_INTERFACE_FLAGS = InterfaceFlags.PANEL_DETECT | InterfaceFlags.UNDOCUMENTED_04
+"""Default state of the interface when it is powered on."""
 
 
 class Frame:
@@ -157,6 +200,11 @@ class StateFrame(Frame):
         pass
 
 
+class InterfaceFrame(Frame):
+    def __init__(self, flags: InterfaceFlags) -> None:
+        self.flags = flags
+
+
 class Fault(Enum):
     INACCESSIBLE = 1
     """The interface could not be opened at the provided path."""
@@ -177,7 +225,7 @@ class Handler:
         """Called when the interface has not sent a frame for a while. When functioning
         normally, the interface sends a VersionFrame every second when there is no
         other traffic. So when the interface goes completely idle, it typically indicates
-        that the device has been disconnected from it or has been powered off."""
+        that the device has gone to sleep or the interface has been disconnected."""
         pass
 
     def on_fault(self, fault: Fault) -> None:
@@ -213,6 +261,19 @@ class VictronMK3:
         except asyncio.CancelledError:
             pass
         self._driver_task = None
+
+    def send_interface_request(self, flags: InterfaceFlags | None = None) -> None:
+        """Sends a request for an InterfaceFrame.
+
+        If flags is None, reports their current values.
+        Otherwise, sets the flags as indicated and reports their new values.
+
+        These flags are lost whenever the interface is disconnected from VE.Bus or
+        the device goes to sleep causing it to lose power even if the interface remains
+        plugged into the host computer. Consider periodically resending the flags to
+        ensure that they remain active."""
+        if self._driver is not None:
+            self._driver.send_interface_request(flags)
 
     def send_version_request(self) -> None:
         """Sends a request for a VersionFrame.
@@ -323,7 +384,8 @@ class _VictronMK3Driver:
                         size = await reader.readexactly(1)
                         msg = await reader.readexactly(size[0] + 1)
                 except TimeoutError:
-                    # May have lost stream synchronization, start over and hope to recover eventually
+                    # The interface went to sleep or we lost stream synchronization
+                    # Start over and hope to recover eventually
                     logger.debug("** Read timeout (interface is idle)")
                     handler.on_idle()
                     continue
@@ -353,6 +415,12 @@ class _VictronMK3Driver:
     def send_version_request(self) -> None:
         self._send_frame("V", [])
 
+    def send_interface_request(self, flags: InterfaceFlags | None) -> None:
+        if flags is None:
+            self._send_frame("H", [])
+        else:
+            self._send_frame("H", [int(flags)])
+
     def send_led_request(self) -> None:
         self._send_frame("L", [])
 
@@ -375,7 +443,7 @@ class _VictronMK3Driver:
             value = 0
         else:
             value = min(int(current_limit * 10), 0x7FFF)
-        self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x81])
+        self._send_frame("S", [switch_state, value & 255, value >> 8, 0x01, 0x80])
 
     def _send_frame(self, command: int, data: List[int]) -> None:
         msg = bytearray(len(data) + 4)
@@ -402,6 +470,8 @@ class _VictronMK3Driver:
                         version=msg[2] | msg[3] << 8 | msg[4] << 16 | msg[5] << 24
                     )
                 )
+            elif msg[1] == ord("H") and len(msg) >= 3:
+                handler.on_frame(InterfaceFrame(InterfaceFlags(msg[2])))
             elif msg[1] == ord("L") and len(msg) >= 4:
                 handler.on_frame(LEDFrame(on=LEDState(msg[2]), blink=LEDState(msg[3])))
             elif msg[1] == ord("S"):

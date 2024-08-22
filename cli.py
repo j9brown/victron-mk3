@@ -5,6 +5,7 @@ from victron_mk3 import (
     Fault,
     Frame,
     Handler,
+    InterfaceFlags,
     SwitchState,
     StateFrame,
     VictronMK3,
@@ -36,6 +37,7 @@ def monitor(path: str) -> None:
         await mk3.start(handler)
 
         while not handler.faulted:
+            mk3.send_interface_request()
             mk3.send_led_request()
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_dc_request()
@@ -63,11 +65,20 @@ def monitor(path: str) -> None:
 @click.option(
     "--monitor/--no-monitor", help="Keep monitoring the status after acknowledgment"
 )
-def control(path: str, switch_state: str, current_limit: float, monitor: bool):
+@click.option(
+    "--standby/--no-standby",
+    help="Prevent the device from going to sleep when turned off",
+)
+def control(
+    path: str, switch_state: str, current_limit: float, monitor: bool, standby: bool
+):
     switch_state = SwitchState[switch_state.upper()]
     logger.info(
         f"Setting switch state to {switch_state.name} and current limit to {current_limit} amps"
     )
+    flags = InterfaceFlags.PANEL_DETECT
+    if standby:
+        flags |= InterfaceFlags.STANDBY
 
     async def main() -> None:
         handler = MonitorHandler()
@@ -75,12 +86,14 @@ def control(path: str, switch_state: str, current_limit: float, monitor: bool):
         await mk3.start(handler)
 
         while not handler.state_frame_seen and not handler.faulted:
+            mk3.send_interface_request(flags)
             mk3.send_state_request(switch_state, current_limit)
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_config_request()
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
 
         while monitor and not handler.faulted:
+            mk3.send_interface_request(flags)
             mk3.send_led_request()
             await asyncio.sleep(DELAY_BETWEEN_REQUESTS)
             mk3.send_dc_request()
