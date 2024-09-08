@@ -41,6 +41,7 @@ def monitor(path: str) -> None:
             await mk3.send_dc_request()
             for phase in range(1, AC_PHASES_SUPPORTED + 1):
                 await mk3.send_ac_request(phase)
+            await mk3.send_power_request()
             await mk3.send_config_request()
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
@@ -94,6 +95,7 @@ def control(
             await mk3.send_dc_request()
             for phase in range(1, AC_PHASES_SUPPORTED + 1):
                 await mk3.send_ac_request(phase)
+            await mk3.send_power_request()
             await mk3.send_config_request()
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 

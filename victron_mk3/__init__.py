@@ -195,6 +195,18 @@ class ACResponse(Response):
         self.ac_mains_frequency = ac_mains_frequency
 
 
+class PowerResponse(Response):
+    def __init__(
+        self,
+        dc_power: float,
+        ac_mains_power: float,
+        ac_inverter_power: float,
+    ) -> None:
+        self.dc_power = dc_power
+        self.ac_mains_power = ac_mains_power
+        self.ac_inverter_power = ac_inverter_power
+
+
 class StateResponse(Response):
     def __init__(self) -> None:
         pass
@@ -326,6 +338,13 @@ class VictronMK3:
             return None
         return await self._driver.send_state_request(switch_state, current_limit)
 
+    async def send_power_request(self) -> PowerResponse:
+        """Sends a request for power transfer information.
+        Does nothing if the interface is not running."""
+        if self._driver is None:
+            return None
+        return await self._driver.send_power_request()
+
 
 class _VictronMK3Driver:
     # The documentation recommends a 500 ms timeout for most requests.
@@ -364,7 +383,7 @@ class _VictronMK3Driver:
         self._writer: asyncio.StreamWriter = None
         self._w_nonce: int = 0
         self._w_completion: Callable[[bytes], None] = None
-        self._variable_id_queue = [0, 1, 2, 3, 4, 5, 7, 8]
+        self._variable_id_queue = [0, 1, 2, 3, 4, 5, 7, 8, 14, 15, 16]
         self._variable_info = {}
         self._variable_info_request_time = None
         self._response_waiters = []
@@ -413,7 +432,7 @@ class _VictronMK3Driver:
                 if len(msg) == size[0] + 1 and (size[0] + sum(msg)) & 255 == 0:
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(f"<< {size.hex()}{msg.hex()}")
-                    self._handle_frame(handler, msg)
+                    self._handle_frame(handler, msg[:-1])
         except Exception:
             # Report faults
             logger.debug(f"Fault: {fault}", exc_info=True)
@@ -493,6 +512,25 @@ class _VictronMK3Driver:
             _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
         )
 
+    async def send_power_request(self) -> PowerResponse:
+        self._send_w_request([0x30, 14, 15, 16], self._handle_power_response)
+        return await self._wait_for_response(
+            PowerResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def _handle_power_response(self, handler: Handler, msg: bytes) -> None:
+        if self._ensure_variable_info_available():
+            if len(msg) >= 9 and msg[2] == 0x85:
+                self._deliver_response(
+                    handler,
+                    PowerResponse(
+                        dc_power=self._variable_info[14].parse(msg[3:5]),
+                        ac_mains_power=-self._variable_info[15].parse(msg[5:7]),
+                        ac_inverter_power=self._variable_info[16].parse(msg[7:9]),
+                    ),
+                )
+
     def _send_frame(self, command: int, data: List[int]) -> None:
         msg = bytearray(len(data) + 4)
         msg[0] = len(data) + 2
@@ -529,16 +567,14 @@ class _VictronMK3Driver:
                 )
             elif msg[1] == ord("S"):
                 self._deliver_response(handler, StateResponse())
-            elif msg[1] == ord("W"):
-                self._handle_w_response(0, msg)
             elif msg[1] == ord("X"):
-                self._handle_w_response(1, msg)
+                self._handle_w_response(handler, 0, msg)
             elif msg[1] == ord("Y"):
-                self._handle_w_response(2, msg)
+                self._handle_w_response(handler, 1, msg)
             elif msg[1] == ord("Z"):
-                self._handle_w_response(3, msg)
+                self._handle_w_response(handler, 2, msg)
         elif len(msg) >= 15 and msg[0] == 0x20:  # Info Response
-            if len(self._variable_id_queue) == 0:  # Need variables populated for these
+            if self._ensure_variable_info_available():
                 if msg[5] == 0x0C:
                     self._deliver_response(
                         handler,
@@ -575,8 +611,6 @@ class _VictronMK3Driver:
                             ),
                         ),
                     )
-            else:
-                self._populate_next_variable_info()
         elif len(msg) >= 13 and msg[0] == 0x41:  # Config Response
             self._deliver_response(
                 handler,
@@ -625,6 +659,12 @@ class _VictronMK3Driver:
                 break
         handler.on_response(response)
 
+    def _ensure_variable_info_available(self) -> bool:
+        if len(self._variable_id_queue) == 0:
+            return True
+        self._populate_next_variable_info()
+        return False
+
     def _populate_next_variable_info(self) -> None:
         if len(self._variable_id_queue) == 0:
             return
@@ -647,7 +687,7 @@ class _VictronMK3Driver:
             [0x36, id & 255, id >> 8], self._handle_variable_info_response
         )
 
-    def _handle_variable_info_response(self, msg: bytes) -> None:
+    def _handle_variable_info_response(self, handler: Handler, msg: bytes) -> None:
         self._variable_info_request_time = None
         if len(msg) >= 8 and msg[2] == 0x8E and msg[5] == 0x8F:
             scale = msg[3] | msg[4] << 8
@@ -658,6 +698,8 @@ class _VictronMK3Driver:
             if scale >= 0x4000:
                 scale = 1 / (0x8000 - scale)
             offset = msg[6] | msg[7] << 8
+            if offset >= 0x8000:
+                offset -= 0x10000
             id = self._variable_id_queue.pop(0)
             if HACK_OVERRIDE_AC_INVERTER_CURRENT_SIGNEDNESS and id == 3:
                 signed = True
@@ -666,17 +708,23 @@ class _VictronMK3Driver:
             )
             self._populate_next_variable_info()
 
-    def _send_w_request(self, msg: bytes, completion: Callable[[bytes], None]) -> None:
-        self._w_nonce = (self._w_nonce + 1) % 4
+    def _send_w_request(
+        self, msg: bytes, completion: Callable[[Handler, bytes], None]
+    ) -> None:
+        self._w_nonce = (self._w_nonce + 1) % 3
         self._w_completion = completion
-        self._send_frame(["W", "X", "Y", "Z"][self._w_nonce], msg)
+        # In principle, we can also use "W" in the rotation but it seems that the
+        # "W" replies get cut off if they are longer than 4 bytes and that doesn't
+        # happen when using "X", "Y", or "Z". Notably, our query for power variables
+        # yields a 6 byte reply so we need the headroom.
+        self._send_frame(["X", "Y", "Z"][self._w_nonce], msg)
 
-    def _handle_w_response(self, nonce: int, msg: bytes) -> None:
+    def _handle_w_response(self, handler: Handler, nonce: int, msg: bytes) -> None:
         if self._w_nonce != nonce or self._w_completion is None:
             return None
         completion = self._w_completion
         self._w_completion = None
-        completion(msg)
+        completion(handler, msg)
 
     def _period_to_frequency(period: float) -> float:
         return round(0 if period == 0 else 10 / period, 2)

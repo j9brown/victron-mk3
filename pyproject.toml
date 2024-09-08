@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "victron_mk3"
 authors = [ { name = "Jeff Brown" } ]
 description = "A Python library for communicating with certain Victron charger and inverter devices that have VE.Bus ports using the Victron Interface MK3-USB (VE.Bus to USB)."
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
     "asyncio",
     "pyserial",
