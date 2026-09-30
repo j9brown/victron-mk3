@@ -193,6 +193,11 @@ class InterfaceResponse(Response):
         self.flags = flags
 
 
+class SettingResponse(Response):
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+
 class Fault(Enum):
     INACCESSIBLE = 1
     """The interface could not be opened at the provided path."""
@@ -321,6 +326,13 @@ class VictronMK3:
             return None
         return await self._driver.send_power_request()
 
+    async def send_read_setting_request(self, setting_id: int) -> SettingResponse:
+        """Reads the raw 16-bit value of a device setting by ID (ReadSetting, 0x31).
+        Does nothing if the interface is not running."""
+        if self._driver is None:
+            return None
+        return await self._driver.send_read_setting_request(setting_id)
+
 
 class _VictronMK3Driver:
     # The documentation recommends a 500 ms timeout for most requests.
@@ -400,7 +412,7 @@ class _VictronMK3Driver:
             # the VE.Bus interface is disconnected or goes to sleep so it's simpler to rely only on the
             # interface's default state.  Consequently, it's also fine for this request to be dropped if
             # the interface happens to be asleep right now.
-            self._send_frame("S", [0x00, 0x00, 0x00, 0x01, 0x90, 0x00, 0x01, 0x00])
+            self._send_frame("S", [0x00, 0x00, 0x00, 0x01, 0x90, 0x00, 0x01])
             self._populate_next_variable_info()
 
             # Listen for frames until the task is cancelled
@@ -520,6 +532,20 @@ class _VictronMK3Driver:
                         ac_inverter_power=self._variable_info[16].parse(msg[7:9]),
                     ),
                 )
+
+    async def send_read_setting_request(self, setting_id: int) -> SettingResponse:
+        self._send_w_request(
+            [0x31, setting_id & 0xFF], self._handle_read_setting_response
+        )
+        return await self._wait_for_response(
+            SettingResponse,
+            _VictronMK3Driver.REQUEST_TIMEOUT_SECONDS,
+        )
+
+    def _handle_read_setting_response(self, handler: Handler, msg: bytes) -> None:
+        # ReadSetting response: FF <slot> 0x86 <lo> <hi>
+        if len(msg) >= 5 and msg[2] == 0x86:
+            self._deliver_response(handler, SettingResponse(value=msg[3] | msg[4] << 8))
 
     def _send_frame(self, command: int, data: List[int]) -> None:
         msg = bytearray(len(data) + 4)
